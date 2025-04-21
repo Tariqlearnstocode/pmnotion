@@ -25,60 +25,81 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setLoading(true);
-
     const fetchUserProfile = async (authUserId: string) => {
+        // Prevent fetching if profile already loaded for this user
+        if (userProfile && userProfile.id === authUserId) {
+            return;
+        }
+        console.log(`Fetching profile for user: ${authUserId}`);
         try {
+            setLoading(true); // Set loading only when we actually fetch
             const profile = await getUserProfileById(authUserId);
             setUserProfile(profile);
         } catch (error) {
             console.error("Error fetching user profile:", error);
             setUserProfile(null);
+        } finally {
+            setLoading(false); // Set loading false after fetch attempt
         }
     };
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      setSession(session);
-      const currentAuthUser = session?.user ?? null;
-      setAuthUser(currentAuthUser);
-      if (currentAuthUser) {
-        await fetchUserProfile(currentAuthUser.id);
+    // Initial check
+    supabase.auth.getSession().then(async ({ data: { session: initialSession } }) => {
+      setSession(initialSession);
+      const initialAuthUser = initialSession?.user ?? null;
+      setAuthUser(initialAuthUser);
+      if (initialAuthUser) {
+        await fetchUserProfile(initialAuthUser.id);
+      } else {
+        setUserProfile(null); // Clear profile if no initial user
       }
-      setLoading(false);
-
-      const { data: authListener } = supabase.auth.onAuthStateChange(
-        async (_event, session) => {
-          console.log('Auth state changed:', _event, session?.user?.id);
-          setSession(session);
-          const newAuthUser = session?.user ?? null;
-          setAuthUser(newAuthUser);
-          
-          if (newAuthUser) {
-            setLoading(true);
-            await fetchUserProfile(newAuthUser.id);
-            setLoading(false);
-          } else {
-            setUserProfile(null);
-            setLoading(false);
-          }
-        }
-      );
-
-      return () => {
-        authListener?.subscription.unsubscribe();
-      };
+      setLoading(false); // Ensure loading is false after initial check
     }).catch(error => {
       console.error("Error getting initial session:", error);
       setUserProfile(null);
       setLoading(false);
     });
-  }, []);
+
+    // Listener for subsequent changes
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      async (_event, currentSession) => {
+        console.log('Auth state changed:', _event, currentSession?.user?.id);
+        setSession(currentSession);
+        const currentAuthUser = currentSession?.user ?? null;
+        const previousAuthUserId = authUser?.id;
+
+        // Update authUser state regardless
+        setAuthUser(currentAuthUser);
+
+        if (currentAuthUser) {
+          // Fetch profile only if:
+          // 1. The user ID has changed from the previous state OR
+          // 2. We don't have a user profile loaded yet for the current user
+          if (currentAuthUser.id !== previousAuthUserId || !userProfile || userProfile.id !== currentAuthUser.id) {
+            await fetchUserProfile(currentAuthUser.id);
+          } else {
+            // User is the same and profile is already loaded, ensure loading is false
+            setLoading(false);
+          }
+        } else {
+          // No user, clear profile and set loading false
+          setUserProfile(null);
+          setLoading(false);
+        }
+      }
+    );
+
+    return () => {
+      authListener?.subscription.unsubscribe();
+    };
+  }, [authUser?.id, userProfile]); // Add dependencies to re-evaluate if needed
 
   const signOut = async () => {
     const { error } = await supabase.auth.signOut();
     if (error) {
       console.error('Error signing out:', error);
     }
+    // State updates (session, authUser, userProfile) will be handled by onAuthStateChange
   };
 
   const value = {
@@ -89,6 +110,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     signOut,
   };
 
+  // Render children only when initial loading is complete?
+  // Or show a loading indicator based on the `loading` state in consuming components.
   return (
     <AuthContext.Provider value={value}>
       {children}
